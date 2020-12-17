@@ -19,11 +19,10 @@ type model = {
   shown: bool,
   providers: list(provider),
   triggeredFrom: option([ | `CommandPalette]),
-  lastRequestID: option(int),
   signatures: list(Exthost.SignatureHelp.Signature.t),
+  editorID: option(int),
   activeSignature: option(int),
   activeParameter: option(int),
-  editorID: option(int),
   location: option(CharacterPosition.t),
   context: option(Exthost.SignatureHelp.RequestContext.t),
 };
@@ -32,7 +31,6 @@ let initial = {
   shown: false,
   providers: [],
   triggeredFrom: None,
-  lastRequestID: None,
   signatures: [],
   activeSignature: None,
   activeParameter: None,
@@ -56,12 +54,11 @@ type msg =
       signatures: list(Exthost.SignatureHelp.Signature.t),
       activeSignature: int,
       activeParameter: int,
-      requestID: int,
       editorID: int,
       location: CharacterPosition.t,
       context: Exthost.SignatureHelp.RequestContext.t,
     })
-  | EmptyInfoReceived(int)
+  | EmptyInfoReceived
   | RequestFailed(string)
   | SignatureIncrementClicked
   | SignatureDecrementClicked
@@ -106,81 +103,128 @@ module Contributions = {
   let commands = Commands.[show, incrementSignature, decrementSignature];
 };
 
-let getEffectsForLocation =
-    (
-      ~buffer,
-      ~location,
-      ~extHostClient,
-      ~model,
-      ~context,
-      ~requestID,
-      ~editor,
-    ) => {
-  let matchingProviders =
-    model.providers
-    |> List.filter(({selector, _}) =>
-         Exthost.DocumentSelector.matchesBuffer(~buffer, selector)
-       );
+let sub = (~buffer, ~isInsertMode, ~activePosition, ~client, model) =>
+  if (!isInsertMode) {
+    Isolinear.Sub.none;
+  } else {
+    let context =
+      Exthost.SignatureHelp.RequestContext.{
+        triggerKind: Exthost.SignatureHelp.TriggerKind.Invoke,
+        triggerCharacter: None,
+        isRetrigger: false,
+      };
 
-  matchingProviders
-  |> List.map(provider =>
-       Service_Exthost.Effects.LanguageFeatures.provideSignatureHelp(
-         ~handle=provider.handle,
-         ~uri=Buffer.getUri(buffer),
-         ~position=location,
-         ~context,
-         extHostClient,
-         res =>
-         switch (res) {
-         | Ok(Some({signatures, activeSignature, activeParameter, _})) =>
-           InfoReceived({
-             signatures,
-             activeSignature,
-             activeParameter,
-             requestID,
-             editorID: Feature_Editor.Editor.getId(editor),
-             location,
-             context,
-           })
-         | Ok(None) => EmptyInfoReceived(requestID)
-         | Error(s) => RequestFailed(s)
-         }
-       )
-     )
-  |> Isolinear.Effect.batch;
-};
+    let toMsg =
+        (res: result(option(Exthost.SignatureHelp.Response.t), string)) => {
+      switch (res) {
+      | Ok(Some({signatures, activeSignature, activeParameter, _})) =>
+        prerr_endline("got something");
+        InfoReceived({
+          signatures,
+          activeSignature,
+          activeParameter,
+          // TODO:
+          editorID: (-1),
+          location: activePosition,
+          context,
+        });
+      | Ok(None) =>
+        prerr_endline("empty info received");
+        EmptyInfoReceived;
+      | Error(s) =>
+        prerr_endline("failed");
+        RequestFailed(s);
+      };
+    };
+
+    let subs: list(Isolinear.Sub.t(msg)) =
+      model.providers
+      |> List.filter(({selector, _}) =>
+           Exthost.DocumentSelector.matchesBuffer(~buffer, selector)
+         )
+      |> List.map(provider => {
+           Service_Exthost.Sub.signatureHelp(
+             ~handle=provider.handle,
+             ~buffer,
+             ~position=activePosition,
+             ~context,
+             ~toMsg,
+             client,
+           )
+         });
+
+    subs |> Isolinear.Sub.batch;
+  };
+
+// let getEffectsForLocation =
+//     (
+//       ~buffer,
+//       ~location,
+//       ~extHostClient,
+//       ~model,
+//       ~context,
+//       ~requestID,
+//       ~editor,
+//     ) => {
+//   let matchingProviders =
+//     model.providers
+//     |> List.filter(({selector, _}) =>
+//          Exthost.DocumentSelector.matchesBuffer(~buffer, selector)
+//        );
+
+//   matchingProviders
+//   |> List.map(provider =>
+//        Service_Exthost.Effects.LanguageFeatures.provideSignatureHelp(
+//          ~handle=provider.handle,
+//          ~uri=Buffer.getUri(buffer),
+//          ~position=location,
+//          ~context,
+//          extHostClient,
+//          res =>
+//          switch (res) {
+//          | Ok(Some({signatures, activeSignature, activeParameter, _})) =>
+//            InfoReceived({
+//              signatures,
+//              activeSignature,
+//              activeParameter,
+//              requestID,
+//              editorID: Feature_Editor.Editor.getId(editor),
+//              location,
+//              context,
+//            })
+//          | Ok(None) => EmptyInfoReceived(requestID)
+//          | Error(s) => RequestFailed(s)
+//          }
+//        )
+//      )
+//   |> Isolinear.Effect.batch;
+// };
 
 let update = (~maybeBuffer, ~maybeEditor, ~extHostClient, model, msg) =>
   switch (msg) {
   | Command(Show) =>
     switch (maybeBuffer, maybeEditor) {
     | (Some(buffer), Some(editor)) =>
-      let requestID = IDGenerator.get();
-      let context =
-        Exthost.SignatureHelp.RequestContext.{
-          triggerKind: Exthost.SignatureHelp.TriggerKind.Invoke,
-          triggerCharacter: None,
-          isRetrigger: false,
-        };
+      // let context =
+      //   Exthost.SignatureHelp.RequestContext.{
+      //     triggerKind: Exthost.SignatureHelp.TriggerKind.Invoke,
+      //     triggerCharacter: None,
+      //     isRetrigger: false,
+      //   };
 
-      let effects =
-        getEffectsForLocation(
-          ~buffer,
-          ~editor,
-          ~location=Feature_Editor.Editor.getPrimaryCursor(editor),
-          ~extHostClient,
-          ~model,
-          ~context,
-          ~requestID,
-        );
+      let effects = Isolinear.Effect.none;
+      // getEffectsForLocation(
+      //   ~buffer,
+      //   ~editor,
+      //   ~location=Feature_Editor.Editor.getPrimaryCursor(editor),
+      //   ~extHostClient,
+      //   ~model,
+      //   ~context,
+      //   ~requestID,
+      // );
 
       (
-        {
-          ...model,
-          shown: true,
-          triggeredFrom: Some(`CommandPalette),
-          lastRequestID: Some(requestID),
-        },
+        {...model, shown: true, triggeredFrom: Some(`CommandPalette)},
         Effect(effects),
       );
     | _ => (model, Nothing)
@@ -193,42 +237,35 @@ let update = (~maybeBuffer, ~maybeEditor, ~extHostClient, model, msg) =>
       signatures,
       activeSignature,
       activeParameter,
-      requestID,
       editorID,
       location,
       context,
-    }) =>
-    switch (model.lastRequestID) {
-    | Some(reqID) when reqID == requestID => (
-        {
-          ...model,
-          signatures,
-          activeSignature: Some(activeSignature),
-          activeParameter: Some(activeParameter),
-          editorID: Some(editorID),
-          location: Some(location),
-          context: Some(context),
-        },
-        Nothing,
-      )
-    | _ => (model, Nothing)
-    }
-  | EmptyInfoReceived(requestID) =>
-    switch (model.lastRequestID) {
-    | Some(reqID) when reqID == requestID => (
-        {
-          ...model,
-          signatures: [],
-          activeSignature: None,
-          activeParameter: None,
-          shown: false,
-          lastRequestID: None,
-          triggeredFrom: None,
-        },
-        Nothing,
-      )
-    | _ => (model, Nothing)
-    }
+    }) => (
+      {
+        ...model,
+        signatures,
+        activeSignature: Some(activeSignature),
+        activeParameter: Some(activeParameter),
+        editorID: Some(editorID),
+        location: Some(location),
+        context: Some(context),
+      },
+      Nothing,
+    )
+  | EmptyInfoReceived =>
+    // TODO:
+    //   ({
+    //     ...model,
+    //     signatures: [],
+    //     activeSignature: None,
+    //     activeParameter: None,
+    //     shown: false,
+    //     //lastRequestID: None,
+    //     triggeredFrom: None,
+    //   },
+    //   Nothing,
+    // )
+    (model, Nothing)
   | RequestFailed(str) =>
     Log.warnf(m => m("Request failed : %s", str));
     (model, Error(str));
@@ -267,20 +304,17 @@ let update = (~maybeBuffer, ~maybeEditor, ~extHostClient, model, msg) =>
             triggerCharacter: Some(key),
             isRetrigger: false,
           };
-        let effects =
-          getEffectsForLocation(
-            ~buffer,
-            ~editor,
-            ~location,
-            ~extHostClient,
-            ~model,
-            ~context,
-            ~requestID,
-          );
-        (
-          {...model, shown: true, lastRequestID: Some(requestID)},
-          Effect(effects),
-        );
+        // let effects =
+        //   getEffectsForLocation(
+        //     ~buffer,
+        //     ~editor,
+        //     ~location,
+        //     ~extHostClient,
+        //     ~model,
+        //     ~context,
+        //     ~requestID,
+        //   );
+        ({...model, shown: true}, Effect(Isolinear.Effect.none));
       } else if (retrigger && model.shown) {
         Log.infof(m => m("Retrigger character hit: %s", key));
         let requestID = IDGenerator.get();
@@ -290,26 +324,23 @@ let update = (~maybeBuffer, ~maybeEditor, ~extHostClient, model, msg) =>
             triggerCharacter: Some(key),
             isRetrigger: true,
           };
-        let effects =
-          getEffectsForLocation(
-            ~buffer,
-            ~editor,
-            ~location,
-            ~extHostClient,
-            ~model,
-            ~context,
-            ~requestID,
-          );
-        (
-          {...model, shown: true, lastRequestID: Some(requestID)},
-          Effect(effects),
-        );
+        // let effects =
+        //   getEffectsForLocation(
+        //     ~buffer,
+        //     ~editor,
+        //     ~location,
+        //     ~extHostClient,
+        //     ~model,
+        //     ~context,
+        //     ~requestID,
+        //   );
+        ({...model, shown: true}, Effect(Isolinear.Effect.none));
       } else if (key == "<ESC>") {
         (
           {
             ...model,
             shown: false,
-            lastRequestID: None,
+            // lastRequestID: None,
             activeSignature: None,
             activeParameter: None,
             triggeredFrom: None,
@@ -371,20 +402,17 @@ let update = (~maybeBuffer, ~maybeEditor, ~extHostClient, model, msg) =>
       switch (model.location) {
       | Some(location) when location == loc =>
         let requestID = IDGenerator.get();
-        let effects =
-          getEffectsForLocation(
-            ~buffer,
-            ~editor,
-            ~location=cursorLocation,
-            ~extHostClient,
-            ~model,
-            ~context,
-            ~requestID,
-          );
-        (
-          {...model, shown: true, lastRequestID: Some(requestID)},
-          Effect(effects),
-        );
+        // let effects =
+        //   getEffectsForLocation(
+        //     ~buffer,
+        //     ~editor,
+        //     ~location=cursorLocation,
+        //     ~extHostClient,
+        //     ~model,
+        //     ~context,
+        //     ~requestID,
+        //   );
+        ({...model, shown: true}, Effect(Isolinear.Effect.none));
       | _ => (model, Nothing)
       };
     | _ => (model, Nothing)
@@ -541,63 +569,63 @@ module View = {
         }
       | _ => React.empty
       };
-    switch (model.editorID) {
-    | Some(editorID) when editorID == Feature_Editor.Editor.getId(editor) =>
-      <HoverView x y displayAt=`Top theme=colorTheme>
-        <View style=Styles.signatureLine> {renderLabel()} </View>
-        <UI.Components.Row>
-          <View
-            style=Styles.button
-            onMouseUp={_ => dispatch(SignatureDecrementClicked)}>
-            <Codicon
-              icon=Codicon.chevronLeft
-              color={Feature_Theme.Colors.foreground.from(colorTheme)}
-              fontSize={uiFont.size *. 0.9}
-            />
-          </View>
-          <Text
-            text={Printf.sprintf(
-              "%d/%d",
-              signatureIndex + 1,
-              List.length(model.signatures),
-            )}
-            style={Styles.text(~theme=colorTheme)}
-            fontFamily={uiFont.family}
-            fontSize={uiFont.size *. 0.8}
+    // switch (model.editorID) {
+    // | Some(editorID) when editorID == Feature_Editor.Editor.getId(editor) =>
+    <HoverView x y displayAt=`Top theme=colorTheme>
+      <View style=Styles.signatureLine> {renderLabel()} </View>
+      <UI.Components.Row>
+        <View
+          style=Styles.button
+          onMouseUp={_ => dispatch(SignatureDecrementClicked)}>
+          <Codicon
+            icon=Codicon.chevronLeft
+            color={Feature_Theme.Colors.foreground.from(colorTheme)}
+            fontSize={uiFont.size *. 0.9}
           />
-          <View
-            style=Styles.button
-            onMouseUp={_ => dispatch(SignatureIncrementClicked)}>
-            <Codicon
-              icon=Codicon.chevronRight
-              color={Feature_Theme.Colors.foreground.from(colorTheme)}
-              fontSize={uiFont.size *. 0.9}
-            />
-          </View>
-        </UI.Components.Row>
-        {switch (maybeParameter) {
-         | Some({documentation: Some(docs), _})
-             when Exthost.MarkdownString.toString(docs) != "" =>
-           [
-             <horizontalRule theme=colorTheme />,
-             <signatureHelpMarkdown markdown=docs />,
-           ]
-           |> React.listToElement
-         | _ => React.empty
-         }}
-        {switch (maybeSignature) {
-         | Some({documentation: Some(docs), _})
-             when Exthost.MarkdownString.toString(docs) != "" =>
-           [
-             <horizontalRule theme=colorTheme />,
-             <signatureHelpMarkdown markdown=docs />,
-           ]
-           |> React.listToElement
-         | _ => React.empty
-         }}
-      </HoverView>
-    | _ => React.empty
-    };
+        </View>
+        <Text
+          text={Printf.sprintf(
+            "%d/%d",
+            signatureIndex + 1,
+            List.length(model.signatures),
+          )}
+          style={Styles.text(~theme=colorTheme)}
+          fontFamily={uiFont.family}
+          fontSize={uiFont.size *. 0.8}
+        />
+        <View
+          style=Styles.button
+          onMouseUp={_ => dispatch(SignatureIncrementClicked)}>
+          <Codicon
+            icon=Codicon.chevronRight
+            color={Feature_Theme.Colors.foreground.from(colorTheme)}
+            fontSize={uiFont.size *. 0.9}
+          />
+        </View>
+      </UI.Components.Row>
+      {switch (maybeParameter) {
+       | Some({documentation: Some(docs), _})
+           when Exthost.MarkdownString.toString(docs) != "" =>
+         [
+           <horizontalRule theme=colorTheme />,
+           <signatureHelpMarkdown markdown=docs />,
+         ]
+         |> React.listToElement
+       | _ => React.empty
+       }}
+      {switch (maybeSignature) {
+       | Some({documentation: Some(docs), _})
+           when Exthost.MarkdownString.toString(docs) != "" =>
+         [
+           <horizontalRule theme=colorTheme />,
+           <signatureHelpMarkdown markdown=docs />,
+         ]
+         |> React.listToElement
+       | _ => React.empty
+       }}
+    </HoverView>;
+    // | _ => React.empty
+    // };
   };
 
   let make =

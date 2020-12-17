@@ -26,12 +26,11 @@ type msg =
       signatures: list(Exthost.SignatureHelp.Signature.t),
       activeSignature: int,
       activeParameter: int,
-      requestID: int,
       editorID: int,
       location: EditorCoreTypes.CharacterPosition.t,
       context: Exthost.SignatureHelp.RequestContext.t,
     })
-  | EmptyInfoReceived(int)
+  | EmptyInfoReceived
   | RequestFailed(string)
   | SignatureIncrementClicked
   | SignatureDecrementClicked
@@ -58,6 +57,16 @@ let update:
     msg
   ) =>
   (model, outmsg);
+
+let sub:
+  (
+    ~buffer: Buffer.t,
+    ~isInsertMode: bool,
+    ~activePosition: EditorCoreTypes.CharacterPosition.t,
+    ~client: Exthost.Client.t,
+    model
+  ) =>
+  Isolinear.Sub.t(msg);
 
 module Contributions: {let commands: list(Command.t(msg));};
 
